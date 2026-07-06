@@ -1,0 +1,56 @@
+varnishtest "fastcgi backend: happy path, full param check"
+
+shell {
+    set -e
+    cat > "${tmpdir}/dump.cgi" <<'EOF'
+#!/bin/sh
+echo "Content-Type: text/plain"
+echo ""
+env | grep -E '^(REQUEST_METHOD|SCRIPT_FILENAME|DOCUMENT_ROOT|REMOTE_ADDR|SERVER_NAME|QUERY_STRING)=' | sort
+EOF
+    chmod +x "${tmpdir}/dump.cgi"
+}
+
+process p1 {
+    exec fcgiwrap -s "unix:${tmpdir}/fcgi.sock"
+} -start
+
+shell {
+    for i in $(seq 1 50); do
+        test -S "${tmpdir}/fcgi.sock" && exit 0
+        sleep 0.1
+    done
+    echo "fcgiwrap never created its socket" >&2
+    exit 1
+}
+
+varnish v1 -vcl {
+    import fastcgi from "${vmod}";
+
+    backend default none;
+
+    sub vcl_init {
+        new be1 = fastcgi.new("unix:${tmpdir}/fcgi.sock", "${tmpdir}");
+    }
+
+    sub vcl_recv {
+        set req.backend_hint = be1.backend();
+        # Varnish's core already appended the real client IP to X-Forwarded-For
+        # before this code runs; overwrite it here for a predictable test value.
+        set req.http.X-Forwarded-For = "203.0.113.7";
+        return (pass);
+    }
+} -start
+
+client c1 {
+    txreq -url "/dump.cgi" -hdr "Host: example.com"
+    rxresp
+    expect resp.status == 200
+    expect resp.body ~ "REQUEST_METHOD=GET"
+    expect resp.body ~ {SCRIPT_FILENAME=.*/dump.cgi}
+    expect resp.body ~ "DOCUMENT_ROOT="
+    expect resp.body ~ "REMOTE_ADDR=203.0.113.7"
+    expect resp.body ~ "SERVER_NAME=example.com"
+} -run
+
+process p1 -stop

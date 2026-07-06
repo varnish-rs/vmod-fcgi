@@ -1,0 +1,52 @@
+varnishtest "fastcgi backend: POST request with Content-Length"
+
+shell {
+    set -e
+    cat > "${tmpdir}/echo.cgi" <<'EOF'
+#!/bin/sh
+echo "Content-Type: text/plain"
+echo ""
+echo "CONTENT_LENGTH=$CONTENT_LENGTH"
+printf "BODY="
+cat
+EOF
+    chmod +x "${tmpdir}/echo.cgi"
+}
+
+process p1 {
+    exec fcgiwrap -s "unix:${tmpdir}/fcgi.sock"
+} -start
+
+shell {
+    for i in $(seq 1 50); do
+        test -S "${tmpdir}/fcgi.sock" && exit 0
+        sleep 0.1
+    done
+    echo "fcgiwrap never created its socket" >&2
+    exit 1
+}
+
+varnish v1 -vcl {
+    import fastcgi from "${vmod}";
+
+    backend default none;
+
+    sub vcl_init {
+        new be1 = fastcgi.new("unix:${tmpdir}/fcgi.sock", "${tmpdir}");
+    }
+
+    sub vcl_recv {
+        set req.backend_hint = be1.backend();
+        return (pass);
+    }
+} -start
+
+client c1 {
+    txreq -req POST -url "/echo.cgi" -body "hello=world"
+    rxresp
+    expect resp.status == 200
+    expect resp.body ~ "CONTENT_LENGTH=11"
+    expect resp.body ~ "BODY=hello=world"
+} -run
+
+process p1 -stop

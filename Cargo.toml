@@ -1,0 +1,11 @@
+[package]
+name = "vmod_fastcgi"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+varnish = { version = "0.7.1", features = ["ffi"] }
+socket2 = "0.5"

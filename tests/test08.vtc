@@ -1,0 +1,49 @@
+varnishtest "fastcgi backend: fails the fetch when response headers exceed the cap"
+
+shell {
+    set -e
+    # Never emit the blank line separating headers from body, to exercise the
+    # vmod's cap on buffered response headers.
+    cat > "${tmpdir}/no-terminator.cgi" <<'EOF'
+#!/bin/sh
+yes "X-Pad: 0123456789012345678901234567890123456789012345678901234567" | head -c 100000
+EOF
+    chmod +x "${tmpdir}/no-terminator.cgi"
+}
+
+process p1 {
+    exec fcgiwrap -s "unix:${tmpdir}/fcgi.sock"
+} -start
+
+shell {
+    for i in $(seq 1 50); do
+        test -S "${tmpdir}/fcgi.sock" && exit 0
+        sleep 0.1
+    done
+    echo "fcgiwrap never created its socket" >&2
+    exit 1
+}
+
+varnish v1 -vcl {
+    import fastcgi from "${vmod}";
+
+    backend default none;
+
+    sub vcl_init {
+        new be1 = fastcgi.new("unix:${tmpdir}/fcgi.sock", "${tmpdir}");
+    }
+
+    sub vcl_recv {
+        set req.backend_hint = be1.backend();
+        set req.http.X-Forwarded-For = "203.0.113.7";
+        return (pass);
+    }
+} -start
+
+client c1 {
+    txreq -url "/no-terminator.cgi"
+    rxresp
+    expect resp.status == 503
+} -run
+
+process p1 -stop

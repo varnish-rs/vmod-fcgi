@@ -1,0 +1,54 @@
+varnishtest "fastcgi backend: trusts last X-Forwarded-For hop, not a spoofed first hop"
+
+shell {
+    set -e
+    cat > "${tmpdir}/dump.cgi" <<'EOF'
+#!/bin/sh
+echo "Content-Type: text/plain"
+echo ""
+env | grep -E '^(REMOTE_ADDR)=' | sort
+EOF
+    chmod +x "${tmpdir}/dump.cgi"
+}
+
+process p1 {
+    exec fcgiwrap -s "unix:${tmpdir}/fcgi.sock"
+} -start
+
+shell {
+    for i in $(seq 1 50); do
+        test -S "${tmpdir}/fcgi.sock" && exit 0
+        sleep 0.1
+    done
+    echo "fcgiwrap never created its socket" >&2
+    exit 1
+}
+
+varnish v1 -vcl {
+    import fastcgi from "${vmod}";
+
+    backend default none;
+
+    sub vcl_init {
+        new be1 = fastcgi.new("unix:${tmpdir}/fcgi.sock", "${tmpdir}");
+    }
+
+    sub vcl_recv {
+        set req.backend_hint = be1.backend();
+        # Deliberately not touching X-Forwarded-For: Varnish's core already
+        # appended the real client address after whatever the client claims.
+        return (pass);
+    }
+} -start
+
+# Varnish appends the real client address after whatever the client claims, so the
+# vmod must trust the *last* hop (127.0.0.1, added by Varnish) and not the spoofed
+# first hop (9.9.9.9, claimed by the client itself).
+client c1 {
+    txreq -url "/dump.cgi" -hdr "X-Forwarded-For: 9.9.9.9"
+    rxresp
+    expect resp.status == 200
+    expect resp.body ~ "REMOTE_ADDR=127.0.0.1"
+} -run
+
+process p1 -stop

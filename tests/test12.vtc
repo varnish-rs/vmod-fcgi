@@ -1,0 +1,63 @@
+varnishtest "fastcgi backend: duplicate response headers survive to the client"
+
+shell {
+    set -e
+    cat > "${tmpdir}/cookies.cgi" <<'EOF'
+#!/bin/sh
+echo "Content-Type: text/plain"
+echo "Set-Cookie: a=1"
+echo "Set-Cookie: b=2"
+echo ""
+echo "ok"
+EOF
+    chmod +x "${tmpdir}/cookies.cgi"
+}
+
+process p1 {
+    exec fcgiwrap -s "unix:${tmpdir}/fcgi.sock"
+} -start
+
+shell {
+    for i in $(seq 1 50); do
+        test -S "${tmpdir}/fcgi.sock" && exit 0
+        sleep 0.1
+    done
+    echo "fcgiwrap never created its socket" >&2
+    exit 1
+}
+
+varnish v1 -vcl {
+    import fastcgi from "${vmod}";
+
+    backend default none;
+
+    sub vcl_init {
+        new be1 = fastcgi.new("unix:${tmpdir}/fcgi.sock", "${tmpdir}");
+    }
+
+    sub vcl_recv {
+        set req.backend_hint = be1.backend();
+        set req.http.X-Forwarded-For = "203.0.113.7";
+        return (pass);
+    }
+} -start
+
+# resp.http.NAME only ever exposes the first value for a repeated header name in
+# varnishtest, so duplicate-header delivery is checked via the VSL instead: two
+# separate RespHeader records prove beresp.set_header() (called once per pair,
+# including duplicates) didn't let the second Set-Cookie clobber the first.
+logexpect l1 -v v1 {
+    expect * * RespHeader {Set-Cookie: a=1}
+    expect * = RespHeader {Set-Cookie: b=2}
+} -start
+
+client c1 {
+    txreq -url "/cookies.cgi"
+    rxresp
+    expect resp.status == 200
+    expect resp.http.Set-Cookie == "a=1"
+} -run
+
+logexpect l1 -wait
+
+process p1 -stop

@@ -1,0 +1,51 @@
+varnishtest "fastcgi backend: IPv6 Host header end-to-end"
+
+shell {
+    set -e
+    cat > "${tmpdir}/dump.cgi" <<'EOF'
+#!/bin/sh
+echo "Content-Type: text/plain"
+echo ""
+env | grep -E '^(SERVER_NAME|SERVER_PORT)=' | sort
+EOF
+    chmod +x "${tmpdir}/dump.cgi"
+}
+
+process p1 {
+    exec fcgiwrap -s "unix:${tmpdir}/fcgi.sock"
+} -start
+
+shell {
+    for i in $(seq 1 50); do
+        test -S "${tmpdir}/fcgi.sock" && exit 0
+        sleep 0.1
+    done
+    echo "fcgiwrap never created its socket" >&2
+    exit 1
+}
+
+varnish v1 -vcl {
+    import fastcgi from "${vmod}";
+
+    backend default none;
+
+    sub vcl_init {
+        new be1 = fastcgi.new("unix:${tmpdir}/fcgi.sock", "${tmpdir}");
+    }
+
+    sub vcl_recv {
+        set req.backend_hint = be1.backend();
+        set req.http.X-Forwarded-For = "203.0.113.7";
+        return (pass);
+    }
+} -start
+
+client c1 {
+    txreq -url "/dump.cgi" -hdr "Host: [::1]:8080"
+    rxresp
+    expect resp.status == 200
+    expect resp.body ~ "SERVER_NAME=::1"
+    expect resp.body ~ "SERVER_PORT=8080"
+} -run
+
+process p1 -stop

@@ -1,0 +1,49 @@
+varnishtest "fastcgi backend: fails the fetch when X-Forwarded-For is missing"
+
+shell {
+    set -e
+    cat > "${tmpdir}/dump.cgi" <<'EOF'
+#!/bin/sh
+echo "Content-Type: text/plain"
+echo ""
+echo "unreachable"
+EOF
+    chmod +x "${tmpdir}/dump.cgi"
+}
+
+process p1 {
+    exec fcgiwrap -s "unix:${tmpdir}/fcgi.sock"
+} -start
+
+shell {
+    for i in $(seq 1 50); do
+        test -S "${tmpdir}/fcgi.sock" && exit 0
+        sleep 0.1
+    done
+    echo "fcgiwrap never created its socket" >&2
+    exit 1
+}
+
+varnish v1 -vcl {
+    import fastcgi from "${vmod}";
+
+    backend default none;
+
+    sub vcl_init {
+        new be1 = fastcgi.new("unix:${tmpdir}/fcgi.sock", "${tmpdir}");
+    }
+
+    sub vcl_recv {
+        set req.backend_hint = be1.backend();
+        unset req.http.X-Forwarded-For;
+        return (pass);
+    }
+} -start
+
+client c1 {
+    txreq -url "/dump.cgi"
+    rxresp
+    expect resp.status == 503
+} -run
+
+process p1 -stop

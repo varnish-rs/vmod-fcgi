@@ -1,0 +1,55 @@
+varnishtest "fastcgi backend: PUT request with chunked encoding fails (missing Content-Length)"
+
+shell {
+    set -e
+    cat > "${tmpdir}/echo.cgi" <<'EOF'
+#!/bin/sh
+echo "Content-Type: text/plain"
+echo ""
+echo "CONTENT_LENGTH=$CONTENT_LENGTH"
+printf "BODY="
+cat
+EOF
+    chmod +x "${tmpdir}/echo.cgi"
+}
+
+process p1 {
+    exec fcgiwrap -s "unix:${tmpdir}/fcgi.sock"
+} -start
+
+shell {
+    for i in $(seq 1 50); do
+        test -S "${tmpdir}/fcgi.sock" && exit 0
+        sleep 0.1
+    done
+    echo "fcgiwrap never created its socket" >&2
+    exit 1
+}
+
+varnish v1 -vcl {
+    import fastcgi from "${vmod}";
+
+    backend default none;
+
+    sub vcl_init {
+        new be1 = fastcgi.new("unix:${tmpdir}/fcgi.sock", "${tmpdir}");
+    }
+
+    sub vcl_recv {
+        set req.backend_hint = be1.backend();
+        return (pass);
+    }
+} -start
+
+# Same "body without Content-Length" check as the POST/chunked scenario, but for
+# PUT: both share the `matches!(method, "POST" | "PUT" | "PATCH")` arm in
+# backend.rs, and until now only the POST case was locked in by a test.
+client c1 {
+    txreq -req PUT -url "/echo.cgi" -nolen -hdr "Transfer-Encoding: chunked"
+    chunked "hello=world"
+    chunked ""
+    rxresp
+    expect resp.status == 503
+} -run
+
+process p1 -stop

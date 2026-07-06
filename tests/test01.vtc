@@ -1,0 +1,48 @@
+varnishtest "fastcgi backend: GET request, no response body"
+
+shell {
+    set -e
+    cat > "${tmpdir}/no-body.cgi" <<'EOF'
+#!/bin/sh
+echo "Status: 204 No Content"
+echo ""
+EOF
+    chmod +x "${tmpdir}/no-body.cgi"
+}
+
+process p1 {
+    exec fcgiwrap -s "unix:${tmpdir}/fcgi.sock"
+} -start
+
+shell {
+    for i in $(seq 1 50); do
+        test -S "${tmpdir}/fcgi.sock" && exit 0
+        sleep 0.1
+    done
+    echo "fcgiwrap never created its socket" >&2
+    exit 1
+}
+
+varnish v1 -vcl {
+    import fastcgi from "${vmod}";
+
+    backend default none;
+
+    sub vcl_init {
+        new be1 = fastcgi.new("unix:${tmpdir}/fcgi.sock", "${tmpdir}");
+    }
+
+    sub vcl_recv {
+        set req.backend_hint = be1.backend();
+        return (pass);
+    }
+} -start
+
+client c1 {
+    txreq -url "/no-body.cgi"
+    rxresp
+    expect resp.status == 204
+    expect resp.bodylen == 0
+} -run
+
+process p1 -stop

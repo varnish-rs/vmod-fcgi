@@ -1,0 +1,25 @@
+varnishtest "fastcgi backend: connection refused fails cleanly"
+
+varnish v1 -vcl {
+    import fastcgi from "${vmod}";
+
+    backend default none;
+
+    sub vcl_init {
+        # Port 1 is reserved/unassigned; nothing listens there, so this always
+        # gets connection-refused without needing to allocate a real port.
+        new be1 = fastcgi.new("127.0.0.1:1", "${tmpdir}");
+    }
+
+    sub vcl_recv {
+        set req.backend_hint = be1.backend();
+        set req.http.X-Forwarded-For = "203.0.113.7";
+        return (pass);
+    }
+} -start
+
+client c1 {
+    txreq -url "/whatever"
+    rxresp
+    expect resp.status == 503
+} -run
