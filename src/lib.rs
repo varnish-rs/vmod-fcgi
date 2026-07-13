@@ -49,6 +49,16 @@ mod fastcgi {
             self.backend.as_ref().vcl_ptr()
         }
     }
+
+    /// Add an extra name/value pair to send as a FastCGI PARAMS entry for the current
+    /// backend fetch, in addition to the usual CGI params. Can be called multiple times;
+    /// pairs are sent in call order, after the built-in params (so a pair here can
+    /// override a same-named built-in one). Request-scoped: applies to whichever fastcgi
+    /// backend ends up handling this fetch, not tied to a specific `fastcgi.new()` object.
+    #[restrict(backend)]
+    pub fn set_parameter(ctx: &mut Ctx, name: &str, value: &str) {
+        crate::backend::add_extra_param(ctx, name, value);
+    }
 }
 
 fn parse_endpoint(s: &str) -> Result<Endpoint, String> {

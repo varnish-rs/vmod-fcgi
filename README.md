@@ -48,6 +48,22 @@ The second argument to `fastcgi.new()` is the docroot: it's prepended to the
 URL path to build `SCRIPT_FILENAME` (e.g. PHP-FPM needs this to find the
 script to execute).
 
+### Extra FastCGI params
+
+`fastcgi.set_parameter(name, value)` adds an extra name/value pair to send as
+a FastCGI PARAMS entry, on top of the usual CGI ones. Only callable from
+backend-side subs (e.g. `vcl_backend_fetch`) — it's a VCL compile error
+otherwise. Can be called multiple times; pairs are sent in call order, after
+the built-in params, so a pair here can override a same-named built-in one.
+It's request-scoped, not tied to a specific `fastcgi.new()` object — it
+applies to whichever backend ends up handling the fetch.
+
+```vcl
+sub vcl_backend_fetch {
+    fastcgi.set_parameter("REMOTE_USER", "some-authenticated-user");
+}
+```
+
 ### Requirements
 
 - **`X-Forwarded-For` must resolve to a real client IP by the time the backend

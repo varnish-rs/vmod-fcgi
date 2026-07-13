@@ -1,3 +1,4 @@
+use std::ffi::c_void;
 use std::io::{self, BufReader, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::os::fd::OwnedFd;
@@ -15,6 +16,45 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const IO_TIMEOUT: Duration = Duration::from_secs(60);
 const REQUEST_ID: u16 = 1;
 const MAX_RESPONSE_HEADER_BYTES: usize = 64 * 1024;
+
+// Opaque per-vmod identity token for VRT_priv_task: only its address matters, never its
+// contents. Lets `fastcgi.set_parameter()` (called in vcl_backend_fetch) stash extra
+// name/value pairs that get_response() below picks up regardless of which fastcgi
+// backend object ends up handling the fetch, since this is request-scoped, not
+// per-object. See ~/work/vmod_rers for the same pattern (its `Vxp`/`PRIV_ANCHOR`).
+const EXTRA_PARAMS_ANCHOR: *const c_void = [0u8].as_ptr().cast::<c_void>();
+
+static EXTRA_PARAMS_METHODS: ffi::vmod_priv_methods = ffi::vmod_priv_methods {
+    magic: ffi::VMOD_PRIV_METHODS_MAGIC,
+    type_: c"fastcgi extra params".as_ptr(),
+    fini: Some(ffi::vmod_priv::on_fini::<Vec<(String, String)>>),
+};
+
+/// Record an extra name/value pair to be sent as an additional FastCGI PARAMS entry for
+/// the current backend fetch. Called from `fastcgi.set_parameter()`, restricted to
+/// backend-side VCL subs.
+pub fn add_extra_param(ctx: &mut Ctx, name: &str, value: &str) {
+    unsafe {
+        let Some(priv_) = ffi::VRT_priv_task(ctx.raw, EXTRA_PARAMS_ANCHOR).as_mut() else {
+            ctx.fail("fastcgi: couldn't retrieve priv_task (workspace too small?)");
+            return;
+        };
+        let mut params = priv_.take::<Vec<(String, String)>>().unwrap_or_default();
+        params.push((name.to_string(), value.to_string()));
+        priv_.put(params, &EXTRA_PARAMS_METHODS);
+    }
+}
+
+/// Take (and clear) any extra params recorded via `add_extra_param` for the current task.
+fn take_extra_params(ctx: &mut Ctx) -> Vec<(String, String)> {
+    unsafe {
+        ffi::VRT_priv_task_get(ctx.raw, EXTRA_PARAMS_ANCHOR)
+            .as_mut()
+            .and_then(|p| p.take::<Vec<(String, String)>>())
+            .map(|b| *b)
+            .unwrap_or_default()
+    }
+}
 
 pub enum Endpoint {
     Tcp { host: String, port: u16 },
@@ -173,7 +213,7 @@ fn split_host_port(host: &str) -> (String, String) {
 impl VclBackend<FastCgiResponse> for FastCgiBackend {
     fn get_response(&self, ctx: &mut Ctx) -> Result<Option<FastCgiResponse>, VclError> {
         // Phase 1: collect bereq data into owned strings before touching beresp
-        let params: Vec<(String, String)> = {
+        let mut params: Vec<(String, String)> = {
             let bereq = ctx
                 .http_bereq
                 .as_ref()
@@ -266,6 +306,10 @@ impl VclBackend<FastCgiResponse> for FastCgiBackend {
 
             params
         }; // bereq borrow released here
+
+        // Params set via `fastcgi.set_parameter()` in vcl_backend_fetch, appended last so
+        // they can override a same-named built-in param if the VCL author wants that.
+        params.extend(take_extra_params(ctx));
 
         // Phase 2: connect, send request, read CGI headers
         let (ip, status, resp_headers, body_prefix, stream, request_ended) = {
