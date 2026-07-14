@@ -1,0 +1,56 @@
+varnishtest "fastcgi backend: set_parameter() adds extra FastCGI params"
+
+shell {
+    set -e
+    cat > "${tmpdir}/dump.cgi" <<'EOF'
+#!/bin/sh
+echo "Content-Type: text/plain"
+echo ""
+env | grep -E '^X_CUSTOM_' | sort
+EOF
+    chmod +x "${tmpdir}/dump.cgi"
+}
+
+process p1 {
+    exec fcgiwrap -s "unix:${tmpdir}/fcgi.sock"
+} -start
+
+shell {
+    for i in $(seq 1 50); do
+        test -S "${tmpdir}/fcgi.sock" && exit 0
+        sleep 0.1
+    done
+    echo "fcgiwrap never created its socket" >&2
+    exit 1
+}
+
+varnish v1 -vcl {
+    import fastcgi from "${vmod}";
+
+    backend default none;
+
+    sub vcl_init {
+        new be1 = fastcgi.new("unix:${tmpdir}/fcgi.sock", "${tmpdir}");
+    }
+
+    sub vcl_recv {
+        set req.backend_hint = be1.backend();
+        set req.http.X-Forwarded-For = "203.0.113.7";
+        return (pass);
+    }
+
+    sub vcl_backend_fetch {
+        fastcgi.set_parameter("X_CUSTOM_ONE", "alpha");
+        fastcgi.set_parameter("X_CUSTOM_TWO", "beta");
+    }
+} -start
+
+client c1 {
+    txreq -url "/dump.cgi"
+    rxresp
+    expect resp.status == 200
+    expect resp.body ~ "X_CUSTOM_ONE=alpha"
+    expect resp.body ~ "X_CUSTOM_TWO=beta"
+} -run
+
+process p1 -stop

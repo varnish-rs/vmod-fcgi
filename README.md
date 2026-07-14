@@ -48,6 +48,11 @@ The second argument to `fastcgi.new()` is the docroot: it's prepended to the
 URL path to build `SCRIPT_FILENAME` (e.g. PHP-FPM needs this to find the
 script to execute).
 
+See [`examples/phpmyadmin.vcl`](examples/phpmyadmin.vcl) for a fuller,
+runnable example: serving phpMyAdmin through this vmod, with
+[vmod_fileserver](https://github.com/varnish-rs/vmod_fileserver) handling
+static assets alongside it, over both plain HTTP and native TLS.
+
 ### Extra FastCGI params
 
 `fastcgi.set_parameter(name, value)` adds an extra name/value pair to send as
