@@ -50,10 +50,24 @@ jobs:
           sudo apt-get install -qqq fcgiwrap
       - run: just ci-test
 
+  test-macos:
+    name: Test on macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - if: github.event_name != 'release' && github.event_name != 'workflow_dispatch'
+        uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with: { tool: just }
+      - name: Install Varnish and fcgiwrap
+        run: brew install varnish fcgiwrap
+      - run: just build
+      - run: just test
+
   # This job checks if any of the previous jobs failed or were canceled.
   # This approach also allows some jobs to be skipped if they are not needed.
   ci-passed:
-    needs: [test, test-varnish-ver]
+    needs: [test, test-varnish-ver, test-macos]
     if: always()
     runs-on: ubuntu-latest
     steps:
