@@ -18,7 +18,7 @@ jobs:
     name: Test Varnish latest
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - if: github.event_name != 'release' && github.event_name != 'workflow_dispatch'
         uses: Swatinem/rust-cache@v2
         with: { key: "${{ matrix.ver }}" }
@@ -37,7 +37,7 @@ jobs:
           - ver: 9.0
           - ver: 8.0
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - if: github.event_name != 'release' && github.event_name != 'workflow_dispatch'
         uses: Swatinem/rust-cache@v2
         with: { key: "${{ matrix.ver }}" }
@@ -54,7 +54,7 @@ jobs:
     name: Test on macOS
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - if: github.event_name != 'release' && github.event_name != 'workflow_dispatch'
         uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
