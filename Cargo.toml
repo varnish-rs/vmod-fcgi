@@ -7,5 +7,5 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-varnish = { version = "0.7.1", features = ["ffi"] }
+varnish = { version = "0.8.0", features = ["ffi"] }
 socket2 = "0.5"
